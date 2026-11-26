@@ -142,7 +142,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | Windows | Not tested. The log folder locations and the speech command are written from documentation. Reports are welcome. |
 | Linux | Not tested. Speech uses `spd-say`, `espeak-ng`, or `espeak` if one is installed. |
 
-Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. The login item has been run on macOS 15; `brew services` has not been tried. Speaking on other Macs has been run between Macs on one home network.
+Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. The login item has been run on macOS 15; `brew services` has not been tried. Speaking on other Macs (`--remote`): the turn logic is tested and the check for a player's own copy has been run both ways, but a full game with remote speech has not been run on this version.
 
 If it does not find the game's logs it lists the folders it looked in. Please open an issue with the folder where your `net_message_debug.log` lives.
 
