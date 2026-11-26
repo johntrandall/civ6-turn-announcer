@@ -2,6 +2,8 @@
 
 Spoken turn alerts for live multiplayer Civilization VI. It tells you when a new turn starts, when you are one of the last two players still playing, and when you are the last one everybody is waiting for. It reads the game's own log files, so it needs no mod and changes nothing in the game.
 
+**Tested on macOS only so far.** Windows and Linux support is written but has not been run; see [What has been tested](#what-has-been-tested). Reports from either are welcome.
+
 It is for people who play simultaneous-turn multiplayer with friends or family and look away between turns: at another window, at a phone, or at dinner.
 
 ## What it says
