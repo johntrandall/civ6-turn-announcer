@@ -20,22 +20,26 @@ Each player runs it on their own computer and hears only their own alerts.
 
 It needs Python 3.9 or later and has no other dependencies.
 
-With [uv](https://docs.astral.sh/uv/):
+On a Mac with [Homebrew](https://brew.sh/), which brings its own Python:
 
 ```
-uv tool install git+https://github.com/johntrandall/civ6-turn-announcer
+brew install johntrandall/tap/civ6-turn-announcer
 ```
 
-With [pipx](https://pipx.pypa.io/):
+On any system with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
 
 ```
-pipx install git+https://github.com/johntrandall/civ6-turn-announcer
+uv tool install civ6-turn-announcer
+```
+
+```
+pipx install civ6-turn-announcer
 ```
 
 To try it once without installing:
 
 ```
-uvx --from git+https://github.com/johntrandall/civ6-turn-announcer civ6-turn-announcer --test
+uvx civ6-turn-announcer --test
 ```
 
 ## Use

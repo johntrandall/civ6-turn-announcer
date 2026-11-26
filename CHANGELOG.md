@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 (2026-11-25)
+
+- Published to PyPI and to the `johntrandall/tap` Homebrew tap; the README install lines now use them. No change to behavior.
+
 ## 0.1.0 (2026-11-25)
 
 First release.

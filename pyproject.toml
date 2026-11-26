@@ -26,6 +26,7 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/johntrandall/civ6-turn-announcer"
+Repository = "https://github.com/johntrandall/civ6-turn-announcer"
 Issues = "https://github.com/johntrandall/civ6-turn-announcer/issues"
 Changelog = "https://github.com/johntrandall/civ6-turn-announcer/blob/main/CHANGELOG.md"
 

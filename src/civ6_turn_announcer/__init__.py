@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 MESSAGE_LOG = "net_message_debug.log"
 PLAYER_LIST_LOG = "GameCore.log"
