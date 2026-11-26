@@ -58,17 +58,21 @@ It prints the players it found and which one is you, then speaks each alert and 
 
 It is built to run all the time. With no game open it waits; when the game starts a new log it starts over by itself. It stays silent in a game with only one human player, so single-player turns are not read aloud (add `--single-player` if you want them).
 
-With Homebrew, start it at login and keep it running:
+On a Mac, one command makes it start at login and stay running:
 
 ```
-brew services start johntrandall/tap/civ6-turn-announcer
+civ6-turn-announcer --install-login-item
 ```
 
-Its output goes to `civ6-turn-announcer.log` in Homebrew's log folder (`$(brew --prefix)/var/log`).
+It appears in System Settings, General, Login Items as "Civ VI Turn Announcer", where you can switch it off. Its output goes to `~/Library/Logs/civ6-turn-announcer.log`. Remove it with `--uninstall-login-item`.
+
+What that installs: a very small app, `~/Applications/Civ VI Turn Announcer.app`, which only starts the command, and a launch agent, `~/Library/LaunchAgents/io.github.johntrandall.civ6-turn-announcer.plist`, which starts the app at login. The app exists so macOS lists the job under its own name and not as "sh" or "python". Add `--system` (with `sudo`) to install for every user of the computer, into `/Applications` and `/Library/LaunchAgents`.
+
+`brew services start johntrandall/tap/civ6-turn-announcer` also works, without the named Login Items entry.
 
 ### Settings file
 
-Options can live in `~/.config/civ6-turn-announcer/config.ini`, which is how you set spoken names when the program runs as a service. Anything given on the command line wins.
+Options can live in `~/.config/civ6-turn-announcer/config.ini`, which is how you set spoken names when the program runs at login. Anything given on the command line wins. On a Mac, a user without that file gets `/Library/Application Support/civ6-turn-announcer/config.ini` if it exists, for settings shared by every user of the computer.
 
 ```
 [names]
@@ -102,6 +106,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | `--name PLAYER=SPOKEN` | Say SPOKEN in place of the in-game name PLAYER. Repeat for each player. |
 | `--single-player` | Also announce turns in a game with only one human player. |
 | `--config FILE` | Read settings from FILE in place of `~/.config/civ6-turn-announcer/config.ini`. |
+| `--install-login-item`, `--uninstall-login-item` | macOS: start at login under the name "Civ VI Turn Announcer", or remove that. `--system` does it for every user (needs `sudo`); `--command PATH` names the command to start if it is not on PATH. |
 | `--everyone` | Also report the last two and the last one after you have finished your own turn ("Priya and Dave are left", "Dave is left"). |
 | `--notify` | Also show a desktop notification. macOS only. |
 | `--state` | Print the players, which one is you, and who is still playing, then exit. |
@@ -118,7 +123,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | Windows | Not tested. The log folder locations and the speech command are written from documentation. Reports are welcome. |
 | Linux | Not tested. Speech uses `spd-say`, `espeak-ng`, or `espeak` if one is installed. |
 
-Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. Running as a `brew services` service is written but has only been tried as a macOS login agent with the same command.
+Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. The login item has been run on macOS 15; `brew services` has not been tried.
 
 If it does not find the game's logs it lists the folders it looked in. Please open an issue with the folder where your `net_message_debug.log` lives.
 

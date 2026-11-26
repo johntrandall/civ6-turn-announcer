@@ -18,6 +18,7 @@ import argparse
 import configparser
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 MESSAGE_LOG = "net_message_debug.log"
 PLAYER_LIST_LOG = "GameCore.log"
@@ -228,8 +229,15 @@ def wait_for_log_folder(explicit: Optional[str]) -> Path:
             time.sleep(5)
 
 
+SYSTEM_CONFIG = Path("/Library/Application Support/civ6-turn-announcer/config.ini")
+
+
 def default_config_path() -> Path:
-    return Path.home() / ".config" / "civ6-turn-announcer" / "config.ini"
+    """The user's settings file; on macOS a computer-wide one is used when the user has none."""
+    user = Path.home() / ".config" / "civ6-turn-announcer" / "config.ini"
+    if not user.exists() and platform.system() == "Darwin" and SYSTEM_CONFIG.exists():
+        return SYSTEM_CONFIG
+    return user
 
 
 def load_config(path: Path) -> tuple:
@@ -266,6 +274,128 @@ def apply_config(arguments) -> None:
             setattr(arguments, flag, True)
     if arguments.logs is None and options.get("logs"):
         arguments.logs = options["logs"]
+
+
+# --- macOS login item ---------------------------------------------------------------------------------
+#
+# A bare launchd job shows up in System Settings > Login Items as "sh" or "python". Pointing the job at a
+# small app bundle, and naming that bundle in AssociatedBundleIdentifiers, makes macOS list it by name.
+
+APP_NAME = "Civ VI Turn Announcer"
+BUNDLE_ID = "io.github.johntrandall.civ6-turn-announcer"
+_LSREGISTER = (
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+)
+
+
+def login_item_paths(system: bool) -> tuple:
+    """(app bundle, launch agent plist) for one user, or for every user of the computer."""
+    if system:
+        return Path("/Applications") / f"{APP_NAME}.app", Path("/Library/LaunchAgents") / f"{BUNDLE_ID}.plist"
+    home = Path.home()
+    return home / "Applications" / f"{APP_NAME}.app", home / "Library" / "LaunchAgents" / f"{BUNDLE_ID}.plist"
+
+
+def login_item_files(command: str, app: Path) -> dict:
+    """The files of the login item, as {path: bytes}. Pure, so it can be tested."""
+    executable = app / "Contents" / "MacOS" / "civ6-turn-announcer-launcher"
+    info = {
+        "CFBundleIdentifier": BUNDLE_ID,
+        "CFBundleName": APP_NAME,
+        "CFBundleDisplayName": APP_NAME,
+        "CFBundleExecutable": executable.name,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": __version__,
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "LSBackgroundOnly": True,
+    }
+    quoted = command.replace("'", "'\\''")
+    launcher = (
+        "#!/bin/sh\n"
+        "# Started at login by the launch agent. Output goes to the user's Logs folder.\n"
+        'mkdir -p "$HOME/Library/Logs"\n'
+        f"exec '{quoted}' >> \"$HOME/Library/Logs/civ6-turn-announcer.log\" 2>&1\n"
+    )
+    agent = {
+        "Label": BUNDLE_ID,
+        "ProgramArguments": [str(executable)],
+        "AssociatedBundleIdentifiers": [BUNDLE_ID],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 30,
+        "LimitLoadToSessionType": "Aqua",
+    }
+    return {
+        app / "Contents" / "Info.plist": plistlib.dumps(info),
+        executable: launcher.encode("utf-8"),
+        "agent": plistlib.dumps(agent),
+    }
+
+
+def _launchctl(*arguments: str) -> int:
+    return subprocess.run(["launchctl", *arguments], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+
+def _console_uid() -> Optional[int]:
+    """The user at the screen, or None when nobody is logged in there."""
+    try:
+        uid = os.stat("/dev/console").st_uid
+    except OSError:
+        return None
+    return uid or None
+
+
+def install_login_item(system: bool, command: Optional[str]) -> int:
+    if platform.system() != "Darwin":
+        raise SystemExit("--install-login-item is for macOS. On other systems, start the command from your own startup tools.")
+    command = command or shutil.which("civ6-turn-announcer")
+    if not command:
+        raise SystemExit("Could not find the civ6-turn-announcer command on PATH. Pass --command /full/path/to/it.")
+    command = str(Path(command).absolute())
+    app, agent_path = login_item_paths(system)
+    files = login_item_files(command, app)
+    try:
+        for path, content in files.items():
+            path = agent_path if path == "agent" else path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            path.chmod(0o755 if path.parent.name == "MacOS" else 0o644)
+    except PermissionError as error:
+        raise SystemExit(f"{error}\nInstalling for every user of this computer needs sudo.")
+    if shutil.which("codesign"):
+        subprocess.run(["codesign", "--force", "--sign", "-", str(app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.exists(_LSREGISTER):
+        subprocess.run([_LSREGISTER, "-f", str(app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    uid = _console_uid() if system else os.getuid()
+    if uid is not None:
+        _launchctl("bootout", f"gui/{uid}/{BUNDLE_ID}")
+        started = _launchctl("bootstrap", f"gui/{uid}", str(agent_path)) == 0
+    else:
+        started = False
+    print(f"Installed {app}")
+    print(f"Installed {agent_path}")
+    print("It is running now." if started else "It starts at the next login.")
+    print(f'It appears in System Settings > General > Login Items as "{APP_NAME}".')
+    print("Its output goes to ~/Library/Logs/civ6-turn-announcer.log")
+    return 0
+
+
+def uninstall_login_item(system: bool) -> int:
+    if platform.system() != "Darwin":
+        raise SystemExit("--uninstall-login-item is for macOS.")
+    app, agent_path = login_item_paths(system)
+    uid = _console_uid() if system else os.getuid()
+    if uid is not None:
+        _launchctl("bootout", f"gui/{uid}/{BUNDLE_ID}")
+    try:
+        if agent_path.exists():
+            agent_path.unlink()
+        if app.exists():
+            shutil.rmtree(app)
+    except PermissionError as error:
+        raise SystemExit(f"{error}\nRemoving the computer-wide login item needs sudo.")
+    print(f"Removed {agent_path} and {app}")
+    return 0
 
 
 # --- alerts -----------------------------------------------------------------------------------------
@@ -475,12 +605,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state", action="store_true", help="print the players and who is still playing, then exit")
     parser.add_argument("--replay", action="store_true", help="print the alerts the current log would have produced, then exit")
     parser.add_argument("--test", action="store_true", help="make one test alert in the chosen mode, then exit")
+    parser.add_argument(
+        "--install-login-item",
+        action="store_true",
+        help=f'macOS: start at login and keep running, listed in Login Items as "{APP_NAME}"',
+    )
+    parser.add_argument("--uninstall-login-item", action="store_true", help="macOS: remove the login item")
+    parser.add_argument(
+        "--system",
+        action="store_true",
+        help="with the two options above: for every user of this computer (needs sudo)",
+    )
+    parser.add_argument("--command", metavar="PATH", help="with --install-login-item: the command to start, if it is not on PATH")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 
 def main(argv: Optional[list] = None) -> int:
     arguments = build_parser().parse_args(argv)
+    if arguments.install_login_item:
+        return install_login_item(arguments.system, arguments.command)
+    if arguments.uninstall_login_item:
+        return uninstall_login_item(arguments.system)
     apply_config(arguments)
     if arguments.test:
         deliver(Event(NEW_TURN, "Test alert", "Test alert"), arguments.mode, arguments.notify)

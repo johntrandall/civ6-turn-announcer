@@ -208,6 +208,26 @@ class Settings(unittest.TestCase):
         self.assertTrue(arguments.everyone)
 
 
+class LoginItem(unittest.TestCase):
+    def test_files_name_the_bundle_and_start_the_command(self):
+        import plistlib
+
+        from civ6_turn_announcer import APP_NAME, BUNDLE_ID, login_item_files
+
+        app = Path("/Applications") / f"{APP_NAME}.app"
+        files = login_item_files("/opt/tools/it's here/civ6-turn-announcer", app)
+        info = plistlib.loads(files[app / "Contents" / "Info.plist"])
+        agent = plistlib.loads(files["agent"])
+        launcher_path = app / "Contents" / "MacOS" / info["CFBundleExecutable"]
+        self.assertEqual(info["CFBundleIdentifier"], BUNDLE_ID)
+        self.assertEqual(info["CFBundleName"], APP_NAME)
+        self.assertEqual(agent["ProgramArguments"], [str(launcher_path)])
+        self.assertEqual(agent["AssociatedBundleIdentifiers"], [BUNDLE_ID])
+        launcher = files[launcher_path].decode("utf-8")
+        self.assertTrue(launcher.startswith("#!/bin/sh\n"))
+        self.assertIn("exec '/opt/tools/it'\\''s here/civ6-turn-announcer' >>", launcher)
+
+
 class PlayerList(unittest.TestCase):
     def test_last_status_of_each_slot_wins(self):
         import tempfile

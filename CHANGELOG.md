@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 (2026-11-25)
+
+- macOS: `--install-login-item` starts it at login and keeps it running, listed in System Settings, Login Items as "Civ VI Turn Announcer"; `--uninstall-login-item` removes it; `--system` does either for every user of the computer.
+- macOS: a computer-wide settings file, `/Library/Application Support/civ6-turn-announcer/config.ini`, used by a user who has none of their own.
+
 ## 0.2.0 (2026-11-25)
 
 Made to be left running.
