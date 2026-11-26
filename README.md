@@ -52,7 +52,35 @@ Start or join a multiplayer game, then run this in a terminal and leave it runni
 civ6-turn-announcer
 ```
 
-It prints the players it found and which one is you, then speaks each alert and prints it with the time. Stop it with Ctrl+C. It keeps working across games: when the game starts a new log it starts over by itself.
+It prints the players it found and which one is you, then speaks each alert and prints it with the time. Stop it with Ctrl+C. If no game has been started yet, it waits for one.
+
+### Leave it running
+
+It is built to run all the time. With no game open it waits; when the game starts a new log it starts over by itself. It stays silent in a game with only one human player, so single-player turns are not read aloud (add `--single-player` if you want them).
+
+With Homebrew, start it at login and keep it running:
+
+```
+brew services start johntrandall/tap/civ6-turn-announcer
+```
+
+Its output goes to `civ6-turn-announcer.log` in Homebrew's log folder (`$(brew --prefix)/var/log`).
+
+### Settings file
+
+Options can live in `~/.config/civ6-turn-announcer/config.ini`, which is how you set spoken names when the program runs as a service. Anything given on the command line wins.
+
+```
+[names]
+xX_Trajan_Xx = Dave
+MoonlitLlama = Priya
+
+[options]
+mode = announce
+everyone = no
+notify = no
+single-player = no
+```
 
 ### Spoken names
 
@@ -72,6 +100,8 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | `--mode sfx` | Play a short chime in place of the voice, a different one for each kind of alert. |
 | `--mode silent` | Only print the alerts in the terminal. |
 | `--name PLAYER=SPOKEN` | Say SPOKEN in place of the in-game name PLAYER. Repeat for each player. |
+| `--single-player` | Also announce turns in a game with only one human player. |
+| `--config FILE` | Read settings from FILE in place of `~/.config/civ6-turn-announcer/config.ini`. |
 | `--everyone` | Also report the last two and the last one after you have finished your own turn ("Priya and Dave are left", "Dave is left"). |
 | `--notify` | Also show a desktop notification. macOS only. |
 | `--state` | Print the players, which one is you, and who is still playing, then exit. |
@@ -88,7 +118,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | Windows | Not tested. The log folder locations and the speech command are written from documentation. Reports are welcome. |
 | Linux | Not tested. Speech uses `spd-say`, `espeak-ng`, or `espeak` if one is installed. |
 
-Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. Single-player games should announce new turns only, which helps with long computer-player turns, but that has not been tried.
+Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. Running as a `brew services` service is written but has only been tried as a macOS login agent with the same command.
 
 If it does not find the game's logs it lists the folders it looked in. Please open an issue with the folder where your `net_message_debug.log` lives.
 

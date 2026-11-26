@@ -15,6 +15,7 @@ The module has two halves:
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import platform
 import re
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 MESSAGE_LOG = "net_message_debug.log"
 PLAYER_LIST_LOG = "GameCore.log"
@@ -62,12 +63,14 @@ class Tracker:
 
     ``humans`` is the set of player numbers that are people, not computer players; only their turn state
     counts. ``everyone`` also reports the last two and the last one after this computer's player has
-    finished (by default a finished player hears nothing until the next turn).
+    finished (by default a finished player hears nothing until the next turn). Nothing is reported for a
+    game with fewer than two humans unless ``single_player`` is set, so the program can be left running.
     """
 
     humans: set = field(default_factory=set)
     spoken_names: dict = field(default_factory=dict)
     everyone: bool = False
+    single_player: bool = False
     local_player: Optional[int] = None
     names: dict = field(default_factory=dict)
     active: dict = field(default_factory=dict)
@@ -90,7 +93,8 @@ class Tracker:
         """Process one log line and return the events it causes (usually none)."""
         match = _TURN_ACTIVE.search(line)
         if match:
-            return self._turn_active(int(match.group(1)), int(match.group(2)))
+            events = self._turn_active(int(match.group(1)), int(match.group(2)))
+            return events if (self.single_player or len(self.humans) >= 2) else []
         if _END_OF_TURN in line:
             # The next time each human goes active is the start of a new turn,
             # not somebody taking a finished turn back.
@@ -208,6 +212,62 @@ def find_log_folder(explicit: Optional[str]) -> Path:
     )
 
 
+def wait_for_log_folder(explicit: Optional[str]) -> Path:
+    """Like find_log_folder, but waits for the game to write its log instead of stopping.
+
+    This is what lets the program run all the time, started at login, before any game exists.
+    """
+    said = False
+    while True:
+        try:
+            return find_log_folder(explicit)
+        except SystemExit:
+            if not said:
+                print(f"No {MESSAGE_LOG} yet. Waiting for a multiplayer game to start.", flush=True)
+                said = True
+            time.sleep(5)
+
+
+def default_config_path() -> Path:
+    return Path.home() / ".config" / "civ6-turn-announcer" / "config.ini"
+
+
+def load_config(path: Path) -> tuple:
+    """Read the optional settings file: a [names] section and an [options] section.
+
+    Returns (names, options). A missing file gives two empty dictionaries.
+    """
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str  # player names are case-sensitive
+    try:
+        with open(path, encoding="utf-8") as handle:
+            parser.read_file(handle)
+    except OSError:
+        return {}, {}
+    names = dict(parser["names"]) if parser.has_section("names") else {}
+    options = dict(parser["options"]) if parser.has_section("options") else {}
+    return names, options
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "yes", "true", "on")
+
+
+def apply_config(arguments) -> None:
+    """Fill in whatever the command line left unset from the settings file. The command line wins."""
+    path = Path(arguments.config).expanduser() if arguments.config else default_config_path()
+    names, options = load_config(path)
+    arguments.name = list(names.items()) + list(arguments.name)
+    if arguments.mode is None:
+        mode = options.get("mode", "announce").strip().lower()
+        arguments.mode = mode if mode in ("announce", "sfx", "silent") else "announce"
+    for flag, key in (("everyone", "everyone"), ("notify", "notify"), ("single_player", "single-player")):
+        if not getattr(arguments, flag) and _truthy(options.get(key, "")):
+            setattr(arguments, flag, True)
+    if arguments.logs is None and options.get("logs"):
+        arguments.logs = options["logs"]
+
+
 # --- alerts -----------------------------------------------------------------------------------------
 
 _MAC_SOUNDS = {NEW_TURN: "Glass", TWO_LEFT: "Tink", ONE_LEFT: "Pop", ONLY_YOU: "Sosumi"}
@@ -290,6 +350,7 @@ def new_tracker(folder: Path, arguments) -> Tracker:
         humans=read_humans(folder / PLAYER_LIST_LOG),
         spoken_names=dict(arguments.name),
         everyone=arguments.everyone,
+        single_player=arguments.single_player,
     )
     if arguments.player is not None:
         tracker.local_player = arguments.player
@@ -377,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         choices=("announce", "sfx", "silent"),
-        default="announce",
+        default=None,
         help="announce: speak each alert (default). sfx: play a chime. silent: only print.",
     )
     parser.add_argument(
@@ -392,6 +453,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--everyone",
         action="store_true",
         help="also report the last two and the last one after you have finished your own turn",
+    )
+    parser.add_argument(
+        "--single-player",
+        action="store_true",
+        help="also announce turns in a game with only one human player (off by default, so it can run all the time)",
+    )
+    parser.add_argument(
+        "--config",
+        metavar="FILE",
+        help="settings file with [names] and [options] sections (default: ~/.config/civ6-turn-announcer/config.ini)",
     )
     parser.add_argument("--notify", action="store_true", help="also show a desktop notification (macOS only)")
     parser.add_argument("--logs", metavar="FOLDER", help="the game's Logs folder, if it is not found automatically")
@@ -410,8 +481,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list] = None) -> int:
     arguments = build_parser().parse_args(argv)
+    apply_config(arguments)
     if arguments.test:
         deliver(Event(NEW_TURN, "Test alert", "Test alert"), arguments.mode, arguments.notify)
+        return 0
+    if not (arguments.state or arguments.replay):
+        watch(wait_for_log_folder(arguments.logs), arguments)
         return 0
     folder = find_log_folder(arguments.logs)
     if arguments.state:
@@ -420,8 +495,5 @@ def main(argv: Optional[list] = None) -> int:
             catch_up(handle, tracker, arguments.player)
         print(describe(tracker))
         return 0
-    if arguments.replay:
-        replay(folder, arguments)
-        return 0
-    watch(folder, arguments)
+    replay(folder, arguments)
     return 0

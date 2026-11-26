@@ -157,8 +157,14 @@ class LastPlayers(unittest.TestCase):
         self.assertEqual(texts(start_turn(tracker, 5, players=(0, 1))), ["Turn 5"])
         self.assertEqual(texts(tracker.feed(active(0, 0))), ["Only you are left"])
 
-    def test_single_player_game_only_announces_turns(self):
+    def test_single_player_game_is_silent_by_default(self):
         tracker = Tracker(humans={0})
+        tracker.feed(local_send(0))
+        self.assertEqual(start_turn(tracker, 5, players=(0,)), [])
+        self.assertEqual(tracker.feed(active(0, 0)), [])
+
+    def test_single_player_option_announces_turns(self):
+        tracker = Tracker(humans={0}, single_player=True)
         tracker.feed(local_send(0))
         self.assertEqual(texts(start_turn(tracker, 5, players=(0,))), ["Turn 5"])
         self.assertEqual(tracker.feed(active(0, 0)), [])
@@ -167,6 +173,39 @@ class LastPlayers(unittest.TestCase):
         tracker = Tracker(humans={0, 1, 2}, local_player=2)
         start_turn(tracker, 3, players=(0, 1, 2))
         self.assertEqual(texts(tracker.feed(active(0, 0))), ["Player 1 and you are left"])
+
+
+class Settings(unittest.TestCase):
+    def test_names_keep_their_case_and_options_are_read(self):
+        import tempfile
+
+        from civ6_turn_announcer import load_config
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.ini"
+            path.write_text("[names]\nxX_Trajan_Xx = Dave\n\n[options]\nmode = sfx\n", encoding="utf-8")
+            names, options = load_config(path)
+        self.assertEqual(names, {"xX_Trajan_Xx": "Dave"})
+        self.assertEqual(options, {"mode": "sfx"})
+
+    def test_missing_file_is_empty(self):
+        from civ6_turn_announcer import load_config
+
+        self.assertEqual(load_config(Path("/nonexistent/config.ini")), ({}, {}))
+
+    def test_command_line_wins_over_the_file(self):
+        import tempfile
+
+        from civ6_turn_announcer import apply_config, build_parser
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.ini"
+            path.write_text("[names]\nAlba = Al\n\n[options]\nmode = sfx\neveryone = yes\n", encoding="utf-8")
+            arguments = build_parser().parse_args(["--config", str(path), "--mode", "silent", "--name", "Alba=Allie"])
+            apply_config(arguments)
+        self.assertEqual(arguments.mode, "silent")
+        self.assertEqual(dict(arguments.name), {"Alba": "Allie"})
+        self.assertTrue(arguments.everyone)
 
 
 class PlayerList(unittest.TestCase):

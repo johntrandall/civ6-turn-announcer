@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (2026-11-25)
+
+Made to be left running.
+
+- Waits for a game when none has been started, where 0.1 stopped with an error.
+- Silent in a game with fewer than two human players, unless `--single-player` is given. This changes 0.1, which announced turns in single-player games.
+- Settings file `~/.config/civ6-turn-announcer/config.ini` for spoken names and options; `--config FILE` to use another.
+- Homebrew: `brew services start johntrandall/tap/civ6-turn-announcer`.
+
 ## 0.1.1 (2026-11-25)
 
 - Published to PyPI and to the `johntrandall/tap` Homebrew tap; the README install lines now use them. No change to behavior.
