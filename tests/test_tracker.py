@@ -175,6 +175,46 @@ class LastPlayers(unittest.TestCase):
         self.assertEqual(texts(tracker.feed(active(0, 0))), ["Player 1 and you are left"])
 
 
+def remote_texts(events):
+    return [(event.target, event.text) for event in events if event.target]
+
+
+class RemotePlayers(unittest.TestCase):
+    def test_new_turn_goes_to_every_remote_player_but_not_to_you(self):
+        tracker = four_player_tracker(remote_players={"Alba", "Chidi", "Dana"})
+        events = start_turn(tracker, 12)
+        self.assertEqual(remote_texts(events), [("Alba", "Turn 12"), ("Chidi", "Turn 12")])
+        self.assertEqual([event.text for event in events if event.target is None], ["Turn 12"])
+
+    def test_last_two_and_last_one_from_each_remote_players_side(self):
+        tracker = four_player_tracker(remote_players={"Alba", "Bruno", "Chidi"}, spoken_names={"Dana": "Dee"})
+        start_turn(tracker, 12)
+        self.assertEqual(remote_texts(tracker.feed(active(1, 0))), [])  # three still playing
+        self.assertEqual(remote_texts(tracker.feed(active(3, 0))), [("Alba", "Chidi and you are left"), ("Chidi", "Alba and you are left")])
+        self.assertEqual(remote_texts(tracker.feed(active(0, 0))), [("Chidi", "Only you are left")])
+
+    def test_remote_player_hears_your_spoken_name_when_you_are_the_other_one(self):
+        tracker = four_player_tracker(remote_players={"Alba"}, spoken_names={"Dana": "Dee"})
+        start_turn(tracker, 12)
+        tracker.feed(active(1, 0))
+        events = tracker.feed(active(2, 0))
+        self.assertEqual(remote_texts(events), [("Alba", "Dee and you are left")])
+        self.assertEqual([event.text for event in events if event.target is None], ["Alba and you are left"])
+
+    def test_player_without_a_remote_computer_gets_nothing(self):
+        tracker = four_player_tracker(remote_players={"Alba"})
+        start_turn(tracker, 12)
+        tracker.feed(active(0, 0))
+        tracker.feed(active(3, 0))
+        self.assertEqual(remote_texts(tracker.feed(active(1, 0))), [])  # only Chidi is left, and Chidi is not remote
+
+    def test_remote_command_speaks_only_when_no_local_copy_runs(self):
+        from civ6_turn_announcer import remote_command
+
+        command = remote_command("Al's turn; rm -rf $HOME `x`")
+        self.assertEqual(command, "pgrep -f 'civ6_turn_announce[r]' >/dev/null || say 'Als turn rm -rf HOME x'")
+
+
 class Settings(unittest.TestCase):
     def test_names_keep_their_case_and_options_are_read(self):
         import tempfile
@@ -183,15 +223,16 @@ class Settings(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "config.ini"
-            path.write_text("[names]\nxX_Trajan_Xx = Dave\n\n[options]\nmode = sfx\n", encoding="utf-8")
-            names, options = load_config(path)
+            path.write_text("[names]\nxX_Trajan_Xx = Dave\n\n[options]\nmode = sfx\n\n[remote]\nAlba = alba@albas-mac.local\n", encoding="utf-8")
+            names, options, remote = load_config(path)
+        self.assertEqual(remote, {"Alba": "alba@albas-mac.local"})
         self.assertEqual(names, {"xX_Trajan_Xx": "Dave"})
         self.assertEqual(options, {"mode": "sfx"})
 
     def test_missing_file_is_empty(self):
         from civ6_turn_announcer import load_config
 
-        self.assertEqual(load_config(Path("/nonexistent/config.ini")), ({}, {}))
+        self.assertEqual(load_config(Path("/nonexistent/config.ini")), ({}, {}, {}))
 
     def test_command_line_wins_over_the_file(self):
         import tempfile

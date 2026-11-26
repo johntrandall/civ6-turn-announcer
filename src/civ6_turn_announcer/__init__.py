@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 MESSAGE_LOG = "net_message_debug.log"
 PLAYER_LIST_LOG = "GameCore.log"
@@ -56,6 +56,7 @@ class Event:
     kind: str  # NEW_TURN, TWO_LEFT, ONE_LEFT or ONLY_YOU
     text: str  # as shown, with in-game player names
     speech: str  # as spoken, with the spoken-name list applied
+    target: Optional[str] = None  # None: for this computer's player. A player name: for that player's computer.
 
 
 @dataclass
@@ -72,6 +73,7 @@ class Tracker:
     spoken_names: dict = field(default_factory=dict)
     everyone: bool = False
     single_player: bool = False
+    remote_players: set = field(default_factory=set)  # player names announced to on their own computers
     local_player: Optional[int] = None
     names: dict = field(default_factory=dict)
     active: dict = field(default_factory=dict)
@@ -79,6 +81,7 @@ class Tracker:
     _awaiting_start: set = field(default_factory=set)
     _new_turn_pending: bool = False
     _last_report: str = ""
+    _last_remote: dict = field(default_factory=dict)
 
     def label(self, player: int) -> str:
         return self.names.get(player, f"Player {player}")
@@ -126,10 +129,35 @@ class Tracker:
             if self._new_turn_pending:
                 self._new_turn_pending = False
                 self._last_report = ""
+                self._last_remote = {}
                 text = f"Turn {self.turn}" if self.turn is not None else "New turn"
-                return [Event(NEW_TURN, text, text)]
+                events = [Event(NEW_TURN, text, text)]
+                for other in sorted(self.humans):
+                    if other != self.local_player and self.label(other) in self.remote_players:
+                        events.append(Event(NEW_TURN, text, text, target=self.label(other)))
+                return events
             return []
-        return self._report_left()
+        return self._report_left() + self._report_remote()
+
+    def _report_remote(self) -> list:
+        """The same last-two and last-one reports, from the point of view of each remote player."""
+        still = self.still_playing()
+        if len(still) not in (1, 2):
+            return []
+        events = []
+        for player in still:
+            label = self.label(player)
+            if player == self.local_player or label not in self.remote_players:
+                continue
+            if len(still) == 1:
+                kind, message = ONLY_YOU, "Only you are left"
+            else:
+                other = still[0] if still[1] == player else still[1]
+                kind, message = TWO_LEFT, f"{self._spoken(other)} and you are left"
+            if message != self._last_remote.get(player):
+                self._last_remote[player] = message
+                events.append(Event(kind, message, message, target=label))
+        return events
 
     def _report_left(self) -> list:
         still = self.still_playing()
@@ -241,9 +269,9 @@ def default_config_path() -> Path:
 
 
 def load_config(path: Path) -> tuple:
-    """Read the optional settings file: a [names] section and an [options] section.
+    """Read the optional settings file: [names], [options], and [remote] sections.
 
-    Returns (names, options). A missing file gives two empty dictionaries.
+    Returns (names, options, remote). A missing file gives three empty dictionaries.
     """
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str  # player names are case-sensitive
@@ -251,10 +279,11 @@ def load_config(path: Path) -> tuple:
         with open(path, encoding="utf-8") as handle:
             parser.read_file(handle)
     except OSError:
-        return {}, {}
+        return {}, {}, {}
     names = dict(parser["names"]) if parser.has_section("names") else {}
     options = dict(parser["options"]) if parser.has_section("options") else {}
-    return names, options
+    remote = dict(parser["remote"]) if parser.has_section("remote") else {}
+    return names, options, remote
 
 
 def _truthy(value: str) -> bool:
@@ -264,8 +293,9 @@ def _truthy(value: str) -> bool:
 def apply_config(arguments) -> None:
     """Fill in whatever the command line left unset from the settings file. The command line wins."""
     path = Path(arguments.config).expanduser() if arguments.config else default_config_path()
-    names, options = load_config(path)
+    names, options, remote = load_config(path)
     arguments.name = list(names.items()) + list(arguments.name)
+    arguments.remote = list(remote.items()) + list(arguments.remote)
     if arguments.mode is None:
         mode = options.get("mode", "announce").strip().lower()
         arguments.mode = mode if mode in ("announce", "sfx", "silent") else "announce"
@@ -449,7 +479,38 @@ def notify(text: str) -> None:
         _run_detached(["osascript", "-e", f'display notification "{safe}" with title "Civilization VI"'])
 
 
-def deliver(event: Event, mode: str, notification: bool) -> None:
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$")
+
+
+def remote_command(text: str) -> str:
+    """What runs on the other computer: speak, unless that player runs this program there themselves.
+
+    The [r] keeps the check from matching its own command line.
+    """
+    safe = re.sub(r"[^A-Za-z0-9 _.,:()-]", "", text)
+    return f"pgrep -f 'civ6_turn_announce[r]' >/dev/null || say '{safe}'"
+
+
+def speak_remote(host: str, text: str) -> None:
+    """Speak on another Mac over ssh, without waiting. Needs key-based Remote Login to that Mac."""
+    if not _SAFE_HOST.match(host):
+        return
+    command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+    ssh_folder = Path.home() / ".ssh"
+    if ssh_folder.is_dir():
+        # Keep one connection open per computer, so each alert does not pay for a new login.
+        command += ["-o", "ControlMaster=auto", "-o", f"ControlPath={ssh_folder}/civ6-%C", "-o", "ControlPersist=15m"]
+    _run_detached(command + [host, remote_command(text)])
+
+
+def deliver(event: Event, mode: str, notification: bool, remote_hosts: Optional[dict] = None) -> None:
+    if event.target is not None:
+        host = (remote_hosts or {}).get(event.target)
+        if host:
+            print(f"{time.strftime('%H:%M:%S')}  to {event.target} on {host}: {event.text}", flush=True)
+            if mode != "silent":
+                speak_remote(host, event.speech)
+        return
     print(f"{time.strftime('%H:%M:%S')}  {event.text}", flush=True)
     if mode == "announce":
         speak(event.speech)
@@ -481,6 +542,7 @@ def new_tracker(folder: Path, arguments) -> Tracker:
         spoken_names=dict(arguments.name),
         everyone=arguments.everyone,
         single_player=arguments.single_player,
+        remote_players=set(dict(arguments.remote)),
     )
     if arguments.player is not None:
         tracker.local_player = arguments.player
@@ -531,7 +593,7 @@ def watch(folder: Path, arguments) -> None:
                     # The player list is written once the game is set up, after this program may have started.
                     tracker.humans = read_humans(folder / PLAYER_LIST_LOG) or tracker.humans
                 for event in tracker.feed(line):
-                    deliver(event, arguments.mode, arguments.notify)
+                    deliver(event, arguments.mode, arguments.notify, dict(arguments.remote))
                 if arguments.player is not None:
                     tracker.local_player = arguments.player
             time.sleep(0.25)
@@ -547,7 +609,8 @@ def replay(folder: Path, arguments) -> None:
     with open(folder / MESSAGE_LOG, "rb") as handle:
         for line in read_lines(handle):
             for event in tracker.feed(line):
-                print(f"{event.text}    [spoken: {event.speech}]")
+                where = f"to {event.target}: " if event.target else ""
+                print(f"{where}{event.text}    [spoken: {event.speech}]")
             if arguments.player is not None:
                 tracker.local_player = arguments.player
 
@@ -578,6 +641,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=_name_pair,
         metavar="PLAYER=SPOKEN",
         help="say SPOKEN in place of the in-game player name PLAYER; repeat for each player",
+    )
+    parser.add_argument(
+        "--remote",
+        action="append",
+        default=[],
+        type=_name_pair,
+        metavar="PLAYER=HOST",
+        help="also speak PLAYER's alerts on the Mac HOST over ssh (user@host), unless PLAYER runs this program there; repeat for each player",
     )
     parser.add_argument(
         "--everyone",

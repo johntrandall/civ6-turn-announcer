@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (2026-11-26)
+
+- One Mac for the whole household: `--remote PLAYER=user@host` (or a `[remote]` section in the settings file) speaks each player's alerts on that player's own Mac over ssh. A player who runs the program on their own Mac is left to their own copy.
+
 ## 0.3.0 (2026-11-25)
 
 - macOS: `--install-login-item` starts it at login and keeps it running, listed in System Settings, Login Items as "Civ VI Turn Announcer"; `--uninstall-login-item` removes it; `--system` does either for every user of the computer.

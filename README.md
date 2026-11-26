@@ -16,7 +16,7 @@ It is for people who play simultaneous-turn multiplayer with friends or family a
 
 It stays quiet the rest of the time. Nothing is said while three or more players are still playing, so the first player to finish is not announced. Once you have ended your own turn you hear nothing until the next turn starts. If someone takes a finished turn back and then finishes again, the same alert is not repeated.
 
-Each player runs it on their own computer and hears only their own alerts.
+Each player can run it on their own computer and hear only their own alerts. Or one Mac in the house can run it and speak each player's alerts on that player's Mac; see [One Mac for the whole household](#one-mac-for-the-whole-household).
 
 ## Install
 
@@ -70,6 +70,21 @@ What that installs: a very small app, `~/Applications/Civ VI Turn Announcer.app`
 
 `brew services start johntrandall/tap/civ6-turn-announcer` also works, without the named Login Items entry.
 
+### One Mac for the whole household
+
+One Mac that is in the game can speak for everybody. It already knows every player's turn state, so it sends each player's alerts to that player's own Mac over the local network.
+
+```
+civ6-turn-announcer --remote MoonlitLlama=priya@priyas-macbook.local --remote xX_Trajan_Xx=dave@daves-imac.local
+```
+
+The left side is the in-game player name; the right side is where that player sits, as `user@host`. Each of those players then hears "Turn 27", "Dave and you are left", and "Only you are left" on their own Mac, and nothing once they have finished, the same as if they ran it themselves.
+
+- **A player's own copy wins.** If a player runs this program on their own Mac, the central Mac stays silent for them there, so nobody hears an alert twice.
+- **What it needs.** Remote Login (System Settings, General, Sharing) switched on at each of those Macs, and an ssh key from the central Mac's user accepted there, so `ssh user@host` works without a password. Nothing has to be installed on them.
+- **How it speaks.** It runs the Mac's built-in `say` command there. The other Macs must be Macs; the central one too.
+- **Limits.** A Mac that is asleep or off the network is skipped silently. The player of the central Mac needs no entry; players without an entry get nothing.
+
 ### Settings file
 
 Options can live in `~/.config/civ6-turn-announcer/config.ini`, which is how you set spoken names when the program runs at login. Anything given on the command line wins. On a Mac, a user without that file gets `/Library/Application Support/civ6-turn-announcer/config.ini` if it exists, for settings shared by every user of the computer.
@@ -84,6 +99,9 @@ mode = announce
 everyone = no
 notify = no
 single-player = no
+
+[remote]
+MoonlitLlama = priya@priyas-macbook.local
 ```
 
 ### Spoken names
@@ -107,6 +125,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | `--single-player` | Also announce turns in a game with only one human player. |
 | `--config FILE` | Read settings from FILE in place of `~/.config/civ6-turn-announcer/config.ini`. |
 | `--install-login-item`, `--uninstall-login-item` | macOS: start at login under the name "Civ VI Turn Announcer", or remove that. `--system` does it for every user (needs `sudo`); `--command PATH` names the command to start if it is not on PATH. |
+| `--remote PLAYER=HOST` | Also speak PLAYER's alerts on the Mac HOST (`user@host`) over ssh, unless PLAYER runs this program there. Repeat for each player. |
 | `--everyone` | Also report the last two and the last one after you have finished your own turn ("Priya and Dave are left", "Dave is left"). |
 | `--notify` | Also show a desktop notification. macOS only. |
 | `--state` | Print the players, which one is you, and who is still playing, then exit. |
@@ -123,7 +142,7 @@ The left side is the player name exactly as the game shows it; `--state` lists t
 | Windows | Not tested. The log folder locations and the speech command are written from documentation. Reports are welcome. |
 | Linux | Not tested. Speech uses `spd-say`, `espeak-ng`, or `espeak` if one is installed. |
 
-Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. The login item has been run on macOS 15; `brew services` has not been tried.
+Also not tested: hot seat, Play by Cloud, dynamic or sequential turn modes, and games with teams. The login item has been run on macOS 15; `brew services` has not been tried. Speaking on other Macs has been run between Macs on one home network.
 
 If it does not find the game's logs it lists the folders it looked in. Please open an issue with the folder where your `net_message_debug.log` lives.
 
