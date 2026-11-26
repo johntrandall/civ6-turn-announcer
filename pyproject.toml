@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "civ6-turn-announcer"
+dynamic = ["version"]
+description = "Spoken turn alerts for live multiplayer Civilization VI, read from the game's own log files. No mod."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "John Randall" }]
+keywords = ["civilization", "civ6", "civilization-vi", "multiplayer", "turn", "notification", "text-to-speech"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Games/Entertainment :: Turn Based Strategy",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/johntrandall/civ6-turn-announcer"
+Issues = "https://github.com/johntrandall/civ6-turn-announcer/issues"
+Changelog = "https://github.com/johntrandall/civ6-turn-announcer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+civ6-turn-announcer = "civ6_turn_announcer:main"
+
+[tool.hatch.version]
+path = "src/civ6_turn_announcer/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/civ6_turn_announcer"]

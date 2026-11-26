@@ -1,0 +1,427 @@
+"""Spoken turn alerts for live multiplayer Civilization VI, read from the game's own log files.
+
+The game writes every player's turn state to ``net_message_debug.log`` while a multiplayer game runs.
+This module follows that file and tells you three things: a new turn started, you are one of the last
+two players still playing, and you are the last one everybody is waiting for.
+
+The module has two halves:
+
+* ``Tracker`` is pure logic. Feed it log lines; it returns ``Event`` objects. It does no input or output,
+  so it is what the tests exercise.
+* Everything else finds the log folder, follows the file, and turns events into speech, a chime, or a
+  desktop notification on the current operating system.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable, Optional
+
+__version__ = "0.1.0"
+
+MESSAGE_LOG = "net_message_debug.log"
+PLAYER_LIST_LOG = "GameCore.log"
+
+# Lines in net_message_debug.log.
+_TURN_ACTIVE = re.compile(r"Player (\d+) set TurnActive ([01]),")
+_GAME_TURN = re.compile(r"Game Turn: (\d+)")
+_END_OF_TURN = "Turn Phase: End of Game Turn"
+_PLAYER_NAME = re.compile(r"m_playerID\((\d+)\).*NETWORK_NAME=Char\{([^@}]+)")
+# Only this computer's own player produces SEND lines, so they identify who "you" are.
+_LOCAL_SEND = re.compile(r"GameCore SEND: \w+: (?:ePlayer|Unit=\d+, Owner)=(\d+)")
+# Lines in GameCore.log.
+_SLOT_STATUS = re.compile(r"Player (\d+): .*SlotStatus - (\w+)")
+
+NEW_TURN = "new_turn"
+TWO_LEFT = "two_left"
+ONE_LEFT = "one_left"
+ONLY_YOU = "only_you"
+
+
+@dataclass(frozen=True)
+class Event:
+    """One thing worth telling the player."""
+
+    kind: str  # NEW_TURN, TWO_LEFT, ONE_LEFT or ONLY_YOU
+    text: str  # as shown, with in-game player names
+    speech: str  # as spoken, with the spoken-name list applied
+
+
+@dataclass
+class Tracker:
+    """Turns log lines into events.
+
+    ``humans`` is the set of player numbers that are people, not computer players; only their turn state
+    counts. ``everyone`` also reports the last two and the last one after this computer's player has
+    finished (by default a finished player hears nothing until the next turn).
+    """
+
+    humans: set = field(default_factory=set)
+    spoken_names: dict = field(default_factory=dict)
+    everyone: bool = False
+    local_player: Optional[int] = None
+    names: dict = field(default_factory=dict)
+    active: dict = field(default_factory=dict)
+    turn: Optional[int] = None
+    _awaiting_start: set = field(default_factory=set)
+    _new_turn_pending: bool = False
+    _last_report: str = ""
+
+    def label(self, player: int) -> str:
+        return self.names.get(player, f"Player {player}")
+
+    def _spoken(self, player: int) -> str:
+        label = self.label(player)
+        return self.spoken_names.get(label, label)
+
+    def still_playing(self) -> list:
+        return sorted(player for player in self.humans if self.active.get(player) == 1)
+
+    def feed(self, line: str) -> list:
+        """Process one log line and return the events it causes (usually none)."""
+        match = _TURN_ACTIVE.search(line)
+        if match:
+            return self._turn_active(int(match.group(1)), int(match.group(2)))
+        if _END_OF_TURN in line:
+            # The next time each human goes active is the start of a new turn,
+            # not somebody taking a finished turn back.
+            self._new_turn_pending = True
+            self._awaiting_start = set(self.humans)
+            return []
+        match = _GAME_TURN.search(line)
+        if match:
+            self.turn = int(match.group(1))
+            return []
+        match = _LOCAL_SEND.search(line)
+        if match:
+            self.local_player = int(match.group(1))
+            return []
+        if "NetPlayerInfo" in line:
+            match = _PLAYER_NAME.search(line)
+            if match:
+                self.names[int(match.group(1))] = match.group(2)
+        return []
+
+    def _turn_active(self, player: int, value: int) -> list:
+        if player not in self.humans:
+            return []
+        self.active[player] = value
+        if value == 1 and player in self._awaiting_start:
+            # Start of a turn: every human goes active in one burst. Announce the turn once.
+            self._awaiting_start.discard(player)
+            if self._new_turn_pending:
+                self._new_turn_pending = False
+                self._last_report = ""
+                text = f"Turn {self.turn}" if self.turn is not None else "New turn"
+                return [Event(NEW_TURN, text, text)]
+            return []
+        return self._report_left()
+
+    def _report_left(self) -> list:
+        still = self.still_playing()
+        if len(still) not in (1, 2):
+            return []  # silent while three or more are playing, so the first finisher is not announced
+        local_is_left = self.local_player in still
+        if not local_is_left and not self.everyone:
+            return []
+        others = [player for player in still if player != self.local_player]
+        if local_is_left and not others:
+            kind, text, speech = ONLY_YOU, "Only you are left", "Only you are left"
+        elif local_is_left:
+            kind = TWO_LEFT
+            text = f"{self.label(others[0])} and you are left"
+            speech = f"{self._spoken(others[0])} and you are left"
+        elif len(others) == 2:
+            kind = TWO_LEFT
+            text = f"{self.label(others[0])} and {self.label(others[1])} are left"
+            speech = f"{self._spoken(others[0])} and {self._spoken(others[1])} are left"
+        else:
+            kind = ONE_LEFT
+            text = f"{self.label(others[0])} is left"
+            speech = f"{self._spoken(others[0])} is left"
+        if text == self._last_report:
+            return []  # somebody took a turn back and the same people are left again
+        self._last_report = text
+        return [Event(kind, text, speech)]
+
+
+def read_humans(player_list_log: Path) -> set:
+    """Player numbers whose slot is a person, from the player lists the game writes to GameCore.log.
+
+    The game writes the list several times while a game is set up; the last status of each slot wins.
+    """
+    status = {}
+    try:
+        with open(player_list_log, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = _SLOT_STATUS.search(line)
+                if match:
+                    status[int(match.group(1))] = match.group(2)
+    except OSError:
+        return set()
+    return {player for player, slot in status.items() if slot == "Human"}
+
+
+def candidate_log_folders() -> list:
+    """Where the game keeps its Logs folder, most likely first, for the current operating system."""
+    home = Path.home()
+    game = "Sid Meier's Civilization VI"
+    system = platform.system()
+    if system == "Darwin":
+        support = home / "Library" / "Application Support" / game
+        return [support / "Firaxis Games" / game / "Logs", support / "Logs"]
+    if system == "Windows":
+        folders = []
+        for documents in (home / "Documents", home / "OneDrive" / "Documents"):
+            for name in (game, f"{game} (Epic)"):
+                folders.append(documents / "My Games" / name / "Logs")
+        return folders
+    return [
+        home / ".local" / "share" / "aspyr-media" / game / "Logs",
+        home / ".local" / "share" / "aspyr-media" / game / "Firaxis Games" / game / "Logs",
+    ]
+
+
+def find_log_folder(explicit: Optional[str]) -> Path:
+    if explicit:
+        folder = Path(explicit).expanduser()
+        if not (folder / MESSAGE_LOG).exists():
+            raise SystemExit(f"No {MESSAGE_LOG} in {folder}.")
+        return folder
+    candidates = candidate_log_folders()
+    for folder in candidates:
+        if (folder / MESSAGE_LOG).exists():
+            return folder
+    looked = "\n  ".join(str(folder) for folder in candidates)
+    raise SystemExit(
+        f"Could not find {MESSAGE_LOG}. Start a multiplayer game first, or pass --logs FOLDER.\n"
+        f"Looked in:\n  {looked}"
+    )
+
+
+# --- alerts -----------------------------------------------------------------------------------------
+
+_MAC_SOUNDS = {NEW_TURN: "Glass", TWO_LEFT: "Tink", ONE_LEFT: "Pop", ONLY_YOU: "Sosumi"}
+
+
+def _run_detached(command: list) -> None:
+    """Start a command and do not wait for it; a missing program is not an error worth stopping for."""
+    try:
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def speak(text: str) -> None:
+    system = platform.system()
+    if system == "Darwin":
+        _run_detached(["say", text])
+    elif system == "Windows":
+        script = (
+            "Add-Type -AssemblyName System.Speech; "
+            "(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak($args[0])"
+        )
+        _run_detached(["powershell", "-NoProfile", "-Command", script, text])
+    else:
+        for program in ("spd-say", "espeak-ng", "espeak"):
+            if shutil.which(program):
+                _run_detached([program, text])
+                return
+        sys.stdout.write("\a")
+
+
+def chime(kind: str) -> None:
+    system = platform.system()
+    if system == "Darwin":
+        _run_detached(["afplay", f"/System/Library/Sounds/{_MAC_SOUNDS.get(kind, 'Glass')}.aiff"])
+    elif system == "Windows":
+        import winsound  # only exists on Windows
+
+        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION if kind == ONLY_YOU else winsound.MB_OK)
+    else:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+
+
+def notify(text: str) -> None:
+    """A desktop notification. macOS only; elsewhere the terminal line is the visible record."""
+    if platform.system() == "Darwin":
+        safe = text.replace("\\", "").replace('"', "")
+        _run_detached(["osascript", "-e", f'display notification "{safe}" with title "Civilization VI"'])
+
+
+def deliver(event: Event, mode: str, notification: bool) -> None:
+    print(f"{time.strftime('%H:%M:%S')}  {event.text}", flush=True)
+    if mode == "announce":
+        speak(event.speech)
+    elif mode == "sfx":
+        chime(event.kind)
+    if notification:
+        notify(event.text)
+
+
+# --- following the log --------------------------------------------------------------------------------
+
+
+def read_lines(handle) -> Iterable[str]:
+    """Complete lines available now; a half-written last line is left for the next call."""
+    while True:
+        position = handle.tell()
+        line = handle.readline()
+        if not line:
+            return
+        if not line.endswith(b"\n"):
+            handle.seek(position)
+            return
+        yield line.decode("utf-8", errors="replace")
+
+
+def new_tracker(folder: Path, arguments) -> Tracker:
+    tracker = Tracker(
+        humans=read_humans(folder / PLAYER_LIST_LOG),
+        spoken_names=dict(arguments.name),
+        everyone=arguments.everyone,
+    )
+    if arguments.player is not None:
+        tracker.local_player = arguments.player
+    return tracker
+
+
+def catch_up(handle, tracker: Tracker, fixed_player: Optional[int]) -> None:
+    """Read what the game already wrote, silently, to learn names, the turn, and who is playing now."""
+    for line in read_lines(handle):
+        tracker.feed(line)
+        if fixed_player is not None:
+            tracker.local_player = fixed_player
+
+
+def describe(tracker: Tracker) -> str:
+    lines = [f"turn {tracker.turn if tracker.turn is not None else '?'}"]
+    for player in sorted(tracker.humans):
+        state = {1: "playing", 0: "finished"}.get(tracker.active.get(player), "unknown")
+        you = "  (you)" if player == tracker.local_player else ""
+        lines.append(f"player {player}  {tracker.label(player)}  {state}{you}")
+    if not tracker.humans:
+        lines.append("no human players found yet")
+    return "\n".join(lines)
+
+
+def watch(folder: Path, arguments) -> None:
+    path = folder / MESSAGE_LOG
+    tracker = new_tracker(folder, arguments)
+    handle = open(path, "rb")
+    catch_up(handle, tracker, arguments.player)
+    print(f"Watching {path}")
+    print(describe(tracker))
+    print("Stop with Ctrl+C.", flush=True)
+    try:
+        while True:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            if size < handle.tell():
+                # The game started again and began a new log: forget everything and start over.
+                handle.close()
+                handle = open(path, "rb")
+                tracker = new_tracker(folder, arguments)
+                catch_up(handle, tracker, arguments.player)
+            for line in read_lines(handle):
+                if not tracker.humans or _END_OF_TURN in line:
+                    # The player list is written once the game is set up, after this program may have started.
+                    tracker.humans = read_humans(folder / PLAYER_LIST_LOG) or tracker.humans
+                for event in tracker.feed(line):
+                    deliver(event, arguments.mode, arguments.notify)
+                if arguments.player is not None:
+                    tracker.local_player = arguments.player
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        handle.close()
+
+
+def replay(folder: Path, arguments) -> None:
+    """Print every event the existing log would have produced, without sound. Useful for checking a setup."""
+    tracker = new_tracker(folder, arguments)
+    with open(folder / MESSAGE_LOG, "rb") as handle:
+        for line in read_lines(handle):
+            for event in tracker.feed(line):
+                print(f"{event.text}    [spoken: {event.speech}]")
+            if arguments.player is not None:
+                tracker.local_player = arguments.player
+
+
+def _name_pair(value: str) -> tuple:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("use PLAYER=SPOKEN, for example --name xX_Trajan_Xx=Dave")
+    player, spoken = value.split("=", 1)
+    return player.strip(), spoken.strip()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="civ6-turn-announcer",
+        description="Spoken turn alerts for live multiplayer Civilization VI: a new turn, "
+        "the last two players, and the last player everybody is waiting for.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("announce", "sfx", "silent"),
+        default="announce",
+        help="announce: speak each alert (default). sfx: play a chime. silent: only print.",
+    )
+    parser.add_argument(
+        "--name",
+        action="append",
+        default=[],
+        type=_name_pair,
+        metavar="PLAYER=SPOKEN",
+        help="say SPOKEN in place of the in-game player name PLAYER; repeat for each player",
+    )
+    parser.add_argument(
+        "--everyone",
+        action="store_true",
+        help="also report the last two and the last one after you have finished your own turn",
+    )
+    parser.add_argument("--notify", action="store_true", help="also show a desktop notification (macOS only)")
+    parser.add_argument("--logs", metavar="FOLDER", help="the game's Logs folder, if it is not found automatically")
+    parser.add_argument(
+        "--player",
+        type=int,
+        metavar="NUMBER",
+        help="your player number, if it is not worked out automatically (see --state)",
+    )
+    parser.add_argument("--state", action="store_true", help="print the players and who is still playing, then exit")
+    parser.add_argument("--replay", action="store_true", help="print the alerts the current log would have produced, then exit")
+    parser.add_argument("--test", action="store_true", help="make one test alert in the chosen mode, then exit")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    if arguments.test:
+        deliver(Event(NEW_TURN, "Test alert", "Test alert"), arguments.mode, arguments.notify)
+        return 0
+    folder = find_log_folder(arguments.logs)
+    if arguments.state:
+        tracker = new_tracker(folder, arguments)
+        with open(folder / MESSAGE_LOG, "rb") as handle:
+            catch_up(handle, tracker, arguments.player)
+        print(describe(tracker))
+        return 0
+    if arguments.replay:
+        replay(folder, arguments)
+        return 0
+    watch(folder, arguments)
+    return 0
